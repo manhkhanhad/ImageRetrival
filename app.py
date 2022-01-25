@@ -6,6 +6,7 @@ from PIL import Image
 from flask import Flask
 #from flask_cors import CORS, cross_origin
 from flask import request
+import re
 
 import numpy as np
 import cv2
@@ -14,7 +15,9 @@ from io import BytesIO
 import time
 from flask import jsonify
 
-#app = Flask(__name__, static_folder="static")
+from flask import send_file, send_from_directory, safe_join, abort
+
+app = Flask(__name__, static_folder="static")
 
 def query(query_img, net, topk):
     #query_img = cv2.imread(query_path)
@@ -35,32 +38,28 @@ def query(query_img, net, topk):
     relevant_image = []
     for i in ranklist:
         img_path = dataset.get_filename(i)
-        #img = cv2.imread(img_path)
         img = Image.open(img_path).convert('RGB')
-        relevant_image_path.append(img_path)
-        relevant_image.append(PILtobase64(img))
-        
-        print(img_path)
-        #cv2_imshow(resizeImg(img,0.20))
+        image_name = img_path.split('/')[-1]
+        relevant_image_path.append(image_name)
     
     result = {
-                'query_time': query_time,
-                'top_k_score': top_k_score,
-                'relevant_image_path': relevant_image_path,
-                'relevant_image': relevant_image
+                'query_time': str(query_time),
+                'top_k_score': str(top_k_score),
+                'relevant_image_name': relevant_image_path
                 }
     print(result["query_time"])
     print(result["top_k_score"])
-    print(result["relevant_image_path"])
-    for img in result["relevant_image"]:
-        print(len(img))
+    print(result["relevant_image_name"])
     
     return result
     
 def base64toPIL(img):
-    im_bytes = base64.b64decode(img)
-    im_file = BytesIO(im_bytes)
-    return Image.open(im_file)
+#     im_bytes = base64.b64decode(img)
+#     im_file = BytesIO(im_bytes)
+#     return Image.open(im_file)
+    img = re.sub('^data:image/.+;base64,', '', img)
+    img = Image.open(BytesIO(base64.b64decode(img)))
+    return img
 
 def PILtobase64(img):
     buffered = BytesIO()
@@ -68,43 +67,79 @@ def PILtobase64(img):
     img_str = base64.b64encode(buffered.getvalue())
     return img_str
 
+@app.route('/', methods=['GET'])
+def test():
+    return "server is running"
 
-# @app.route('/query', methods=['POST'])
-# def getQueryFromClient():
-#     """
-#     Parameter:
-#         Input: 
-#         {
-#             'query': (base64) query image
-#             'top_k': (int) number of relevant image to response
-#         }
+@app.route("/get-image/<image_name>",methods=['GET'])
+def getImage(image_name):
+    try:
+        return send_from_directory(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg"), path=image_name, as_attachment=True)
+    except FileNotFoundError:
+        abort(404)
+        
+@app.route("/get-suggest-query",methods=['GET'])
+def suggestQuery():
+    """
+    Parameter:
+        Input:
+        {
+        'category': (str) image category
+        }
+        
+        Output:
+        {
+        'result': (list of str) name of images
+        }
     
-#         Output: 
-#         {
-#             query_time: (float) query time in second
-#             top_k_score: (list of float) similarity score of relevant image
-#             relevant_image_path: (list of string) path of relevant image
-#             relevant_image: (list of base64) relevant images
-#         }
-#     """
+    Available Categories
+    ['christ_church', 'trinity', 'magdalen', 'oxford', 'balliol', 'hertford', 'radcliffe_camera', 'new', 'ashmolean', 'all_souls', 'oriel', 'worcester', 'bodleian', 'cornmarket', 'pitt_rivers', 'keble', 'jesus']
+    """
     
-#     #Read Image form client and convert to PIL Image
-#     query_img = request.form.get('query')
-#     query_img = base64toPIL(query_img)
-#     query_img = transforms_img(query_img).unsqueeze(0)
+    category = request.form.get('category')
     
-#     #Query
-#     result = query(query_img,net,10)
+    response = {
+        'status': 200,
+        'message': 'OK',
+        'result': image_dict[category]
+    }
+    return response
+
+@app.route('/query', methods=['POST'])
+def getQueryFromClient():
+    """
+    Parameter:
+        Input: 
+        {
+            'query': (base64) query image
+            'top_k': (int) number of relevant image to response
+        }
     
-#     #Return result to Client
-#     response = {
-#         'status': 200,
-#         'message': 'OK',
-#         'result': result
-#     }
+        Output: 
+        {
+            query_time: (float) query time in second
+            top_k_score: (list of float) similarity score of relevant images
+            relevant_image_name: (list of string) name of relevant images
+        }
+    """
     
-#     response = jsonify(response)
-#     return(response)
+    #Read Image form client and convert to PIL Image
+    query_img = request.form.get('query')
+    query_img = base64toPIL(query_img)
+    query_img = transforms_img(query_img).unsqueeze(0)
+    
+    #Query
+    result = query(query_img,net,10)
+    
+    #Return result to Client
+    response = {
+        'status': 200,
+        'message': 'OK',
+        'result': result
+    }
+    return(response)
+
+
     
 if __name__ == "__main__":
     
@@ -121,11 +156,20 @@ if __name__ == "__main__":
     #Create image transform 
     transforms_img = transforms.Compose([transforms.ToTensor()])
     
+    #Create Image categories for
+    image_dict = {}
+    for image_name in os.listdir(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg")):
+        category = image_name[:image_name.find('0')-1]
+        if category not in image_dict.keys():
+            image_dict[category] = [image_name]
+        else:
+            image_dict[category].append(image_name)
+    
     
     #Read query image
-    query_path = os.path.join(os.environ['DIR_ROOT'],"query.jpg")
-    query_img = Image.open(query_path).convert('RGB')
-    query_img = transforms_img(query_img).unsqueeze(0)
-    query(query_img,net,10)
+#     query_path = os.path.join(os.environ['DIR_ROOT'],"query.jpg")
+#     query_img = Image.open(query_path).convert('RGB')
+#     query_img = transforms_img(query_img).unsqueeze(0)
+#     query(query_img,net,10)
     
-    #app.run(host='0.0.0.0', port='6868')
+    app.run(host='0.0.0.0', port='6868')
