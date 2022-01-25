@@ -1,3 +1,10 @@
+#Chechpoint
+dirtorch/checkpoints/
+dirtorch/datasets/oxford5k/
+
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
