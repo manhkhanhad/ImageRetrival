@@ -1,10 +1,11 @@
 
 from dirtorch.query import *
+from dirtorch.LSH import *
 import os
 import cv2
 from PIL import Image
 from flask import Flask
-#from flask_cors import CORS, cross_origin
+from flask_cors import CORS, cross_origin
 from flask import request
 import re
 
@@ -14,10 +15,13 @@ import base64
 from io import BytesIO
 import time
 from flask import jsonify
-
 from flask import send_file, send_from_directory, safe_join, abort
+import random
 
 app = Flask(__name__, static_folder="static")
+cors = CORS(app, resources={r"/foo": {"origins": "*"}})
+app.config['CORS_HEADERS'] = 'Content-Type'
+
 
 def query(query_img, net, topk):
     #query_img = cv2.imread(query_path)
@@ -52,6 +56,39 @@ def query(query_img, net, topk):
     print(result["relevant_image_name"])
     
     return result
+
+def query_hash(query_img, net, topk, LSH):
+    #query_img = cv2.imread(query_path)
+    #cv2_imshow(resizeImg(query_img,0.20))
+    start = time.time()
+    query_feature = extractQueryFeature(query_img,net)
+    query_feature = tonumpy(query_feature)
+    
+    ranklist = LSH.predict(query = query_feature, top = topk)
+    ranklist = ranklist[::-1] #reverse
+    query_time = time.time() - start
+    
+    
+    #top_k_score = sorted(scores)[-1:-topk-1:-1]
+    
+    relevant_image_path = []
+    relevant_image = []
+    for i in ranklist:
+        img_path = dataset.get_filename(i)
+        img = Image.open(img_path).convert('RGB')
+        image_name = img_path.split('/')[-1]
+        relevant_image_path.append(image_name)
+    
+    result = {
+                'query_time': str(query_time),
+                #'top_k_score': str(top_k_score),
+                'relevant_image_name': relevant_image_path
+                }
+    print(result["query_time"])
+    #print(result["top_k_score"])
+    print(result["relevant_image_name"])
+    
+    return result
     
 def base64toPIL(img):
 #     im_bytes = base64.b64decode(img)
@@ -72,13 +109,16 @@ def test():
     return "server is running"
 
 @app.route("/get-image/<image_name>",methods=['GET'])
+@cross_origin(origin='*',headers=['Content-Type','Authorization'])
 def getImage(image_name):
     try:
-        return send_from_directory(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg"), path=image_name, as_attachment=True)
+        response = send_from_directory(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg"), path=image_name, as_attachment=True)
+        return response
     except FileNotFoundError:
         abort(404)
-        
-@app.route("/get-suggest-query",methods=['GET'])
+
+@app.route("/get-suggest-query",methods=['POST'])
+@cross_origin(origin='*',headers=['Content-Type','Authorization'])
 def suggestQuery():
     """
     Parameter:
@@ -98,14 +138,21 @@ def suggestQuery():
     
     category = request.form.get('category')
     
+    if category in image_dict.keys():
+        result = image_dict[category]
+        random.shuffle(result)
+    else:
+        result = random.sample(os.listdir(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg")), 20)
+        
     response = {
         'status': 200,
         'message': 'OK',
-        'result': image_dict[category]
+        'result': result
     }
     return response
 
 @app.route('/query', methods=['POST'])
+@cross_origin(origin='*',headers=['Content-Type','Authorization'])
 def getQueryFromClient():
     """
     Parameter:
@@ -129,18 +176,21 @@ def getQueryFromClient():
     query_img = transforms_img(query_img).unsqueeze(0)
     
     #Query
-    result = query(query_img,net,10)
+    LSH = LSH(bdescs)
+    result = query_hash(query_img,net,10,LSH)
     
     #Return result to Client
     response = {
         'status': 200,
         'message': 'OK',
-        'result': result
+        'result': result,
     }
+    
+    # add header
+
     return(response)
 
 
-    
 if __name__ == "__main__":
     
     #Load Network
@@ -171,5 +221,11 @@ if __name__ == "__main__":
 #     query_img = Image.open(query_path).convert('RGB')
 #     query_img = transforms_img(query_img).unsqueeze(0)
 #     query(query_img,net,10)
+    #hash_query
+    #query_path = os.path.join(os.environ['DIR_ROOT'],"query.jpg")
+    #query_img = Image.open(query_path).convert('RGB')
+    #query_img = transforms_img(query_img).unsqueeze(0)
+    #LSH = LSH(bdescs)
+    #query_hash(query_img,net,10)
     
     app.run(host='0.0.0.0', port='6868')
