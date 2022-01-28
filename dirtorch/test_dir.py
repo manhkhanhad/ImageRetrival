@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-sys.path.append('/content/drive/MyDrive/DoAnMonHoc/InformationRetrieval/deep-image-retrieval')
+sys.path.append('/home/jovyan/work/ImageRetrival/')
 
 from dirtorch.utils.convenient import mkdir
 from dirtorch.utils import common

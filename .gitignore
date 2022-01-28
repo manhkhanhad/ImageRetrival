@@ -1,6 +1,8 @@
 #Chechpoint
 dirtorch/checkpoints/
 dirtorch/datasets/oxford5k/
+aff/*.pt
+aff/H1to6p
 
 
 

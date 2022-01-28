@@ -35,10 +35,11 @@ class LSH():
         train = df.values
         Train = map(lambda x: (int(x[-1]),Vectors.dense(x[:-1])), train)
         Train_df = spark.createDataFrame(Train,schema=["id","features"])
-
+        
         brp = BucketedRandomProjectionLSH(inputCol="features", outputCol="hashes", 
                                       bucketLength=bucketLength,numHashTables=numHashTables)
         model = brp.fit(Train_df)
+        model.transform(Train_df)
         self.model = model 
         self.train = Train_df
     def predict(self, query, top = 10):
