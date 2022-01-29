@@ -196,17 +196,16 @@ def draw_matches(kps1, kps2, As1, As2, tentatives, inl_mask, img1, img2, H_gt):
     
     return 
 
-def draw_bbox(kps1, kps2, As1, As2, tentatives, inl_mask, img1, img2, H_gt):
+def draw_bbox(kps1, kps2, As1, As2, tentatives, inl_mask, img1, img2, H_gt, H):
     matchesMask = inl_mask.ravel().tolist()
     tentatives_idxs = np.array([[m.queryIdx, m.trainIdx] for m in tentatives])
     h,w,ch = img1.shape
     pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
     dst = cv2.perspectiveTransform(pts, H)
-    #Ground truth transformation
-    img2_tr = cv2.polylines(img2,[np.int32(dst)],True,(0,0,255),3, cv2.LINE_AA)
-    plt.imshow(img2_tr)
     print(np.int32(dst))
-    return
+    #Ground truth transformation
+    #img2_tr = cv2.polylines(img2,[np.int32(dst)],True,(0,0,255),3, cv2.LINE_AA)
+    return np.int32(dst).reshape(4,2)
 
 def kpts_to_pkl(root, name, kpts, descs, As):
     pts = []

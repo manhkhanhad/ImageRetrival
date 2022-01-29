@@ -1,5 +1,7 @@
 import argparse
 import sys
+from query import *
+from utils.common import tonumpy, matmul, pool
 from os import listdir
 from os.path import isfile, join
 from typing import Dict, List, Optional, Tuple
@@ -18,7 +20,7 @@ from pyspark.conf import SparkConf
 from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark.sql import SparkSession
 class LSH():
-    def __init__(self, train_feature, bucketLength = 0.008, numHashTables = 18):
+    def __init__(self, train_feature, bucketLength = 0.0002, numHashTables = 3):
         """
         push train_feature to hash 's bucket 
         train_feature: array of images_feature (np ndarray)
@@ -50,4 +52,32 @@ class LSH():
         key = Vectors.dense(query)
         result = self.model.approxNearestNeighbors(self.train, key, 10000, distCol="EuclideanDistance")
         resultList = result.select("id").rdd.flatMap(lambda x: x).collect()
-        return resultList[:top]
+        return resultList
+if __name__ == "__main__":
+    net = load_model(os.path.join(os.environ['DIR_ROOT'],"checkpoints/Resnet-101-AP-GeM.pt"),False)
+    #Load data
+    dataset = ImageListRelevants(os.environ["DB_ROOT"]+"/oxford5k/gnd_oxford5k.pkl", os.environ["DB_ROOT"] + "/oxford5k", "jpg" )
+    dataLoader = get_loader(dataset, trf_chain="", preprocess=net.preprocess, iscuda=True,output=['img'], batch_size=1, threads=1, shuffle=False)
+    #Load database feature
+    bdescs = np.load(os.path.join(os.environ['DB_ROOT'] + "/oxford5k", 'feats.bdescs.npy'))
+    lshash = LSH(bdescs)
+    
+    query = cv2.imread(os.environ['DIR_ROOT']+'/query.jpg')
+    transforms_img = transforms.Compose([transforms.ToTensor()])
+    query_img = transforms_img(query).unsqueeze(0)
+    query_img = extractQueryFeature(query_img,net)
+    
+    res = lshash.predict(query_img)
+    
+    inx_ft = []
+    for i in res:
+      inx_ft.append(bdescs[i])
+    inx_ft = tonumpy(np.array(inx_ft))
+    query_feature = tonumpy(np.array(query_img))
+    scores = matmul(query_feature, inx_ft)
+    ranklist = sorted(range(len(scores)), key=lambda i: scores[i])[-10:]
+    ranklist = ranklist[::-1] #reverse
+    print(len(ranklist))
+    with open(os.environ['DIR_ROOT']+'test.txt', 'w') as f:
+        for item in ranklist:
+            f.write("%s\n" % res[item])

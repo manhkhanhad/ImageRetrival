@@ -24,6 +24,9 @@ from copy import deepcopy
 import pydegensac
 from extract_patches.core import extract_patches
 from affnet.AFFNetExtractor import extract_descriptors, extract_sift_keypoints_upright, extimate_affine_shape, estimate_orientation, match_snn, ransac_validate
+import json
+
+from scipy.spatial import distance as dist
 
 app = Flask(__name__, static_folder="static")
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
@@ -49,15 +52,52 @@ def load_npz(file_path):
         pts.append(cv2.KeyPoint(point[0], point[1], point[2], point[3]))
     return pts, loaded["descs"], loaded["As"]
 
+def order_points(pts):
+	xSorted = pts[np.argsort(pts[:, 0]), :]
+	leftMost = xSorted[:2, :]
+	rightMost = xSorted[2:, :]
+	leftMost = leftMost[np.argsort(leftMost[:, 1]), :]
+	(tl, bl) = leftMost
+	D = dist.cdist(tl[np.newaxis], rightMost, "euclidean")[0]
+	(br, tr) = rightMost[np.argsort(D)[::-1], :]
+	return np.array([tl, tr, br, bl], dtype="float32")
+
 def draw_bbox(kps1, kps2, As1, As2, tentatives, inl_mask, img1, img2, H_gt, H):
     matchesMask = inl_mask.ravel().tolist()
     tentatives_idxs = np.array([[m.queryIdx, m.trainIdx] for m in tentatives])
     h,w,ch = img1.shape
-    pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
+    pts = np.float32( [[0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
     dst = cv2.perspectiveTransform(pts, H)
     #Ground truth transformation
-    img2_tr = cv2.polylines(img2,[np.int32(dst)],True,(0,0,255),3, cv2.LINE_AA)
-    return np.int32(dst)
+    #img2_tr = cv2.polylines(img2,[np.int32(dst)],True,(0,0,255),3, cv2.LINE_AA)
+    bbox = np.int32(dst).reshape(4,2)
+    negative = (bbox < 0)
+    bbox[negative] = 0
+
+    h,w, _ = img2.shape
+    
+
+    bbox = order_points(bbox)
+    for i in range(4):
+        if bbox[i,0] > w:
+            bbox[i,0] = w
+        if bbox[i,1] > h:
+            bbox[i,0] = h
+    top = min(bbox[:,1])
+    bot = max(bbox[:,1])
+    left = min(bbox[:,0])
+    right = max(bbox[:,0])
+    # x = bbox[:,0]
+    # y = bbox[:,1]
+    # x.sort()
+    # y.sort()
+
+    # top = x[1]
+    # bot = x[2]
+    # left = y[1]
+    # right = y[2]
+
+    return [int(top), int(bot), int(left), int(right)]
 
 def query(query_img, net, topk, getbbox):
     #query_img = cv2.imread(query_path)
@@ -69,7 +109,7 @@ def query(query_img, net, topk, getbbox):
     
     ranklist = sorted(range(len(scores)), key=lambda i: scores[i])[-topk:]
     ranklist = ranklist[::-1] #reverse
-    query_time = time.time() - start
+    
     
     
     top_k_score = sorted(scores)[-1:-topk-1:-1]
@@ -83,63 +123,147 @@ def query(query_img, net, topk, getbbox):
         image_name = img_path.split('/')[-1]
         relevant_image_path.append(image_name)
 
-        
-    bbox = []
+    bbox_dict = {}   
     #Spaital Matching
     if getbbox == True:
-        
+        bbox = []
+        num_match_keypoint = []
         q_kpts, q_descs, q_As, query_im_cv = AFFNetExtractor(img)
         for img_name in relevant_image_path:
             relevant_img = cv2.cvtColor(cv2.imread(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg",img_name)), cv2.COLOR_BGR2RGB)
             kpts, descs, As = load_npz(os.path.join(KEYPOINT_ROOT, img_name[:-4] + ".npz"))
             tentatives = match_snn(q_descs, descs, 0.85)
-            H, inl_mask = ransac_validate(tentatives, q_kpts, kpts, 2.0)  #Bug
-            box = draw_bbox(q_kpts, kpts, q_As, As, tentatives, inl_mask, query_im_cv, relevant_img, Hgt, H)
-            bbox.append(box.tolist())
+            if len(tentatives) >= 4:
+                H, inl_mask = ransac_validate(tentatives, q_kpts, kpts, 2.0)  #
+                box = draw_bbox(q_kpts, kpts, q_As, As, tentatives, inl_mask, query_im_cv, relevant_img, Hgt, H)
+                num_match_keypoint.append(len(tentatives))
+            else:
+                box = [0,0,0,0]
+                num_match_keypoint.append(0)
+                
+            bbox.append(box)
+            
+        rerank = np.argsort(num_match_keypoint)[::-1]
+        
+        top_k_score = [top_k_score[i] for i in rerank]
+        relevant_image_path = [relevant_image_path[i] for i in rerank]
+        bbox = [bbox[i] for i in rerank]
+
+        for r,b in enumerate(bbox):
+            bbox_dict[r+1] = b
+        print(bbox_dict)      
+        
+    query_time = time.time() - start
     
     result = {
-                'query_time': str(query_time),
+                'query_time': round(query_time, 2),
                 'top_k_score': str(top_k_score),
                 'relevant_image_name': relevant_image_path,
-                'bboxs': str(bbox)
+                'bboxes': bbox_dict
                 }
+    result = json.dumps(result)
     
-    print(result["query_time"])
-    print(result["top_k_score"])
-    print(result["relevant_image_name"])
-    print(result["bboxs"])
+    
+#     print(result["query_time"])
+#     print(result["top_k_score"])
+#     print(result["relevant_image_name"])
+#     print(result["bboxs"])
+    print(result)
     return result
 
-def query_hash(query_img, net, topk, LSHash):
+def query_hash(query_img, net, topk, LSHash,getbbox=False):
     #query_img = cv2.imread(query_path)
     #cv2_imshow(resizeImg(query_img,0.20))
     start = time.time()
     query_feature = extractQueryFeature(query_img,net)
     query_feature = tonumpy(query_feature)
     
-    ranklist = LSHash.predict(query = query_feature, top = topk)
+    res = LSHash.predict(query_feature)
+    
+    inx_ft = []
+    for i in res:
+        inx_ft.append(bdescs[i])
+    inx_ft = tonumpy(np.array(inx_ft))
+    query_feature = tonumpy(np.array(query_feature))
+    scores = matmul(query_feature, inx_ft)
+    ranklist = sorted(range(len(scores)), key=lambda i: scores[i])[-10:]
     ranklist = ranklist[::-1] #reverse
+#     print(len(ranklist))
+#     with open(os.environ['DIR_ROOT']+'test.txt', 'w') as f:
+#         for item in ranklist:
+#             f.write("%s\n" % res[item])
     query_time = time.time() - start
     
     
     #top_k_score = sorted(scores)[-1:-topk-1:-1]
     
+#     relevant_image_path = []
+#     relevant_image = []
+#     for i in ranklist:
+#         img_path = dataset.get_filename(res[i])
+#         img = Image.open(img_path).convert('RGB')
+#         image_name = img_path.split('/')[-1]
+#         relevant_image_path.append(image_name)
+    
+#     result = {
+#                 'query_time': str(query_time),
+#                 #'top_k_score': str(top_k_score),
+#                 'relevant_image_name': relevant_image_path
+#                 }
+#     print(result["query_time"])
+#     #print(result["top_k_score"])
+#     print(result["relevant_image_name"])
+    top_k_score = [0.123] * topk
+    
     relevant_image_path = []
     relevant_image = []
+    
     for i in ranklist:
-        img_path = dataset.get_filename(i)
+        img_path = dataset.get_filename(res[i])
         img = Image.open(img_path).convert('RGB')
         image_name = img_path.split('/')[-1]
         relevant_image_path.append(image_name)
+
+        
+    bbox = []
+    num_match_keypoint = []
+    #Spaital Matching
+    if getbbox == True:
+        q_kpts, q_descs, q_As, query_im_cv = AFFNetExtractor(img)
+        for img_name in relevant_image_path:
+            relevant_img = cv2.cvtColor(cv2.imread(os.path.join(os.environ['DB_ROOT'] + "/oxford5k/jpg",img_name)), cv2.COLOR_BGR2RGB)
+            kpts, descs, As = load_npz(os.path.join(KEYPOINT_ROOT, img_name[:-4] + ".npz"))
+            tentatives = match_snn(q_descs, descs, 0.85)
+            if len(tentatives) >= 4:
+                H, inl_mask = ransac_validate(tentatives, q_kpts, kpts, 2.0)  #
+                box = draw_bbox(q_kpts, kpts, q_As, As, tentatives, inl_mask, query_im_cv, relevant_img, Hgt, H)
+                num_match_keypoint.append(len(tentatives))
+            else:
+                box = np.zeros((4,2))
+                num_match_keypoint.append(0)
+                
+            bbox.append(box.tolist())
+            
+        rerank = np.argsort(num_match_keypoint)[::-1]
+        
+        top_k_score = [top_k_score[i] for i in rerank]
+        relevant_image_path = [relevant_image_path[i] for i in rerank]
+        bbox = [bbox[i] for i in rerank]
+    
+    bbox_dict = {}
+    print(bbox_dict)
+    for r,b in enumerate(bbox):
+        bbox_dict[r+1] = b
+            
+    query_time = time.time() - start
     
     result = {
-                'query_time': str(query_time),
-                #'top_k_score': str(top_k_score),
-                'relevant_image_name': relevant_image_path
+                'query_time': round(query_time, 2),
+                'top_k_score': str(top_k_score),
+                'relevant_image_name': relevant_image_path,
+                'bboxes': bbox_dict
                 }
-    print(result["query_time"])
-    #print(result["top_k_score"])
-    print(result["relevant_image_name"])
+    result = json.dumps(result)
     
     return result
     
@@ -268,7 +392,7 @@ def getQueryFromClient():
     #Read Image form client and convert to PIL Image
     query_img = request.form.get('query')
     top_k = request.form.get('top_k')
-    getbbox = True
+    getbbox = request.form.get('return_bboxes') == 'true'
     
     query_img = base64toPIL(query_img)
     query_img = transforms_img(query_img).unsqueeze(0)
