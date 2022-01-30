@@ -19,6 +19,7 @@ from pyspark.sql.functions import col
 from pyspark.conf import SparkConf
 from pyspark.ml.feature import BucketedRandomProjectionLSH
 from pyspark.sql import SparkSession
+from lshashpy3 import LSHash as anotherLSHash
 class LSH():
     def __init__(self, train_feature, bucketLength = 0.0002, numHashTables = 3):
         """
@@ -53,6 +54,31 @@ class LSH():
         result = self.model.approxNearestNeighbors(self.train, key, 10000, distCol="EuclideanDistance")
         resultList = result.select("id").rdd.flatMap(lambda x: x).collect()
         return resultList
+class anotherLSH():
+    def __init__(self, train_feature):
+        """
+        push train_feature to hash 's bucket 
+        train_feature: array of images_feature (np ndarray)
+        bucketLength: length of bucket
+        numHashTables: num of hashtables
+        """
+        model = anotherLSHash(hash_size=6, input_dim=2048, num_hashtables=18)
+        #df = pd.DataFrame(train_feature)
+        #df['id'] = np.arange(1,len(df)+1,1)
+        #train = df.values
+        for ix,i in enumerate(train_feature):
+            model.index(i, extra_data=ix)
+        self.model = model
+    def predict(self, query, top = 10):
+        """
+        return top relevant images id
+        query: feature of query
+        """
+        nn = self.model.query(query, num_results=10, distance_func="euclidean")
+        resultList = []
+        for ((vec,extra_data),distance) in nn:
+            resultList.append(extra_data)
+        return resultList
 if __name__ == "__main__":
     net = load_model(os.path.join(os.environ['DIR_ROOT'],"checkpoints/Resnet-101-AP-GeM.pt"),False)
     #Load data
@@ -60,24 +86,26 @@ if __name__ == "__main__":
     dataLoader = get_loader(dataset, trf_chain="", preprocess=net.preprocess, iscuda=True,output=['img'], batch_size=1, threads=1, shuffle=False)
     #Load database feature
     bdescs = np.load(os.path.join(os.environ['DB_ROOT'] + "/oxford5k", 'feats.bdescs.npy'))
-    lshash = LSH(bdescs)
+    lshash = anotherLSH(bdescs)
     
     query = cv2.imread(os.environ['DIR_ROOT']+'/query.jpg')
     transforms_img = transforms.Compose([transforms.ToTensor()])
     query_img = transforms_img(query).unsqueeze(0)
     query_img = extractQueryFeature(query_img,net)
+    query_img = tonumpy(query_img)
     
     res = lshash.predict(query_img)
-    
-    inx_ft = []
-    for i in res:
-      inx_ft.append(bdescs[i])
-    inx_ft = tonumpy(np.array(inx_ft))
-    query_feature = tonumpy(np.array(query_img))
-    scores = matmul(query_feature, inx_ft)
-    ranklist = sorted(range(len(scores)), key=lambda i: scores[i])[-10:]
-    ranklist = ranklist[::-1] #reverse
-    print(len(ranklist))
-    with open(os.environ['DIR_ROOT']+'test.txt', 'w') as f:
-        for item in ranklist:
-            f.write("%s\n" % res[item])
+    print(res)
+    print(res[0])
+#     inx_ft = []
+#     for i in res:
+#       inx_ft.append(bdescs[i])
+#     inx_ft = tonumpy(np.array(inx_ft))
+#     query_feature = tonumpy(np.array(query_img))
+#     scores = matmul(query_feature, inx_ft)
+#     ranklist = sorted(range(len(scores)), key=lambda i: scores[i])[-10:]
+#     ranklist = ranklist[::-1] #reverse
+#     print(len(ranklist))
+#     with open(os.environ['DIR_ROOT']+'test.txt', 'w') as f:
+#         for item in ranklist:
+#             f.write("%s\n" % res[item])
